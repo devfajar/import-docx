@@ -7,5 +7,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/exam-json', [ExamJsonController::class, 'convertToJson']);
+Route::post('/import-essay', [ExamJsonController::class, 'convertEssayOnly']);
 Route::post('/debug-docx', [ExamJsonController::class, 'debugDocx']);
 

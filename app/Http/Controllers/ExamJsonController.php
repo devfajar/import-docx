@@ -49,11 +49,93 @@ class ExamJsonController extends Controller
         return response()->json($output);
     }
 
+    public function convertEssayOnly(Request $request)
+    {
+        $request->validate([
+            'document' => 'required|file|mimes:docx'
+        ]);
+
+        $file = $request->file('document');
+        $phpWord = IOFactory::load($file->getRealPath());
+
+        $imageCounter = 1;
+        $imageDir = storage_path('app/public/document_images/');
+        if (!file_exists($imageDir)) mkdir($imageDir, 0777, true);
+
+        $htmlBlocks = [];
+        foreach ($phpWord->getSections() as $section) {
+            foreach ($section->getElements() as $element) {
+                if (!method_exists($element, 'getElements')) continue;
+
+                $blockHtml = '';
+                foreach ($element->getElements() as $child) {
+                    if ($child instanceof \PhpOffice\PhpWord\Element\Text) {
+                        $text = htmlspecialchars($child->getText());
+                        $style = $child->getFontStyle();
+
+                        $styles = [];
+                        if ($style && $style->isBold()) $styles[] = 'font-weight:bold';
+                        if ($style && $style->getColor()) $styles[] = 'color:#' . $style->getColor();
+
+                        $blockHtml .= !empty($styles)
+                            ? '<span style="' . implode(';', $styles) . '">' . $text . '</span>'
+                            : $text;
+                    } elseif ($child instanceof \PhpOffice\PhpWord\Element\TextBreak) {
+                        $blockHtml .= '<br>';
+                    } elseif ($child instanceof \PhpOffice\PhpWord\Element\Image) {
+                        $ext = pathinfo($child->getSource(), PATHINFO_EXTENSION);
+                        $imgName = 'img_' . $imageCounter++ . '.' . $ext;
+                        $imgPath = $imageDir . $imgName;
+                        copy($child->getSource(), $imgPath);
+                        $imgUrl = asset('storage/document_images/' . $imgName);
+                        $blockHtml .= '[[IMAGE:' . $imgUrl . ']]';
+                    }
+                }
+
+                if (!empty(trim(strip_tags($blockHtml)))) {
+                    $htmlBlocks[] = $blockHtml;
+                }
+            }
+        }
+
+        $fullHtml = implode('<br>', $htmlBlocks);
+        $rawBlocks = preg_split('/Jawaban\s*Benar\s*[:\-]?\s*/i', $fullHtml);
+
+        $questions = [];
+
+        for ($i = 0; $i < count($rawBlocks) - 1; $i++) {
+            $questionBlock = trim($rawBlocks[$i]);
+            $answerRaw = trim(strip_tags($rawBlocks[$i + 1]));
+
+            $lines = array_values(array_filter(array_map('trim', explode('<br>', $questionBlock))));
+            $questionText = array_shift($lines);
+            $questionImage = null;
+
+            if (preg_match('/\[\[IMAGE:(.*?)\]\]/', $questionText, $m)) {
+                $questionImage = $m[1];
+                $questionText = str_replace($m[0], '', $questionText);
+            }
+
+            $questions[] = [
+                'id' => 'q' . str_pad(count($questions) + 1, 3, '0', STR_PAD_LEFT),
+                'type' => 'essay',
+                'category' => null,
+                'question' => strip_tags($questionText),
+                'questionImage' => $questionImage,
+                'answer' => [$answerRaw]
+            ];
+        }
+
+        return [
+            'questions' => $questions
+        ];
+    }
+
     //
     public function convertToJson(Request $request)
     {
         $request->validate([
-            'document' => 'required|file|mimes:txt,docx'
+            'document' => 'required|file|mimes:txt,,doc,docx'
         ]);
 
         $file = $request->file('document');
@@ -128,7 +210,9 @@ class ExamJsonController extends Controller
             // Check if image is embedded in question
             if (preg_match('/\[\[IMAGE:(.*?)\]\]/', $questionText, $m)) {
                 $questionImage = $m[1];
-                $questionText = str_replace($m[0], '', $questionText);
+                $questionText = '<p>' . trim(str_replace($m[0], '', $questionText)) . '</p>';
+            } else {
+                $questionText = '<p>' . trim($questionText) . '</p>';
             }
 
             $labels = ['A', 'B', 'C', 'D', 'E'];
@@ -162,7 +246,7 @@ class ExamJsonController extends Controller
 
                     $options[$label] = [
                         'label' => $label,
-                        'text' => trim($line),
+                        'text' => trim($line) ? '<p>' . trim($line) . '</p>' : null,
                         'image' => $img,
                         'explanation' => null,
                         'correct' => strtoupper($label) === strtoupper($answerRaw)
@@ -174,7 +258,7 @@ class ExamJsonController extends Controller
                 'id' => 'q' . str_pad(count($questions) + 1, 3, '0', STR_PAD_LEFT),
                 'type' => 'multiple-choice',
                 'category' => null,
-                'question' => trim($questionText),
+                'question' => $questionText,
                 'questionImage' => $questionImage,
                 'options' => array_values($options)
             ];
@@ -184,5 +268,4 @@ class ExamJsonController extends Controller
             'questions' => $questions
         ];
     }
-
 }
